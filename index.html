@@ -317,7 +317,15 @@ function parseCSV(text) {
     const lines = text.trim().split(/\r?\n/);
     if (lines.length < 2) return [];
 
-    const headers = splitCSVLine(lines[0]).map(h => h.toLowerCase().trim());
+    // Scan for the real header row — skip title rows above it.
+    // The header row is the first row that contains both 'store' and 'item'.
+    let headerLine = 0;
+    for (let i = 0; i < Math.min(10, lines.length); i++) {
+        const lower = lines[i].toLowerCase();
+        if (lower.includes('store') && lower.includes('item')) { headerLine = i; break; }
+    }
+
+    const headers = splitCSVLine(lines[headerLine]).map(h => h.toLowerCase().trim());
     const idx = {
         date:  headers.findIndex(h => h === 'date'),
         store: headers.findIndex(h => h === 'store'),
@@ -328,7 +336,7 @@ function parseCSV(text) {
     };
 
     const rows = [];
-    for (let i = 1; i < lines.length; i++) {
+    for (let i = headerLine + 1; i < lines.length; i++) {
         const c = splitCSVLine(lines[i]);
         const store = (c[idx.store] || '').trim();
         const item  = (c[idx.item]  || '').trim();

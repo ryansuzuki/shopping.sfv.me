@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SFV Price Tracker | shopping.sfv.me</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+    <style>
+        :root {
+            --blue-dark:   #1F4E79;
+            --blue-mid:    #2E75B6;
+            --blue-light:  #BDD7EE;
+            --blue-xlight: #EBF3FB;
+            --gray:        #595959;
+            --gray-light:  #f4f6f9;
+            --red:         #C62828;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+            background: var(--gray-light);
+            color: #222;
+            min-height: 100vh;
+        }
+
+        /* ── Header ── */
+        header {
+            background: var(--blue-dark);
+            color: white;
+            padding: 18px 20px 14px;
+            text-align: center;
+        }
+        header h1 { font-size: 1.45rem; font-weight: 800; letter-spacing: 0.3px; }
+        header p  { font-size: 0.8rem; opacity: 0.7; margin-top: 4px; }
+
+        /* ── Tabs ── */
+        nav {
+            background: var(--blue-mid);
+            display: flex;
+        }
+        .tab {
+            padding: 11px 22px;
+            color: rgba(255,255,255,0.65);
+            cursor: pointer;
+            font-size: 0.88rem;
+            font-weight: 600;
+            border-bottom: 3px solid transparent;
+            white-space: nowrap;
+            transition: all 0.15s;
+            user-select: none;
+        }
+        .tab.active { color: #fff; border-bottom-color: #fff; }
+        .tab:hover  { color: #fff; }
+
+        /* ── Layout ── */
+        main  { max-width: 960px; margin: 0 auto; padding: 16px; }
+        .panel { display: none; }
+        .panel.active { display: block; }
+
+        /* ── Status bar ── */
+        .status-bar {
+            background: var(--blue-xlight);
+            border: 1px solid var(--blue-light);
+            border-radius: 6px;
+            padding: 8px 14px;
+            font-size: 0.8rem;
+            color: var(--gray);
+            margin-bottom: 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 4px;
+        }
+
+        /* ── Latest prices table ── */
+        .category-section { margin-bottom: 20px; border-radius: 6px; overflow: hidden; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+        .category-header {
+            background: var(--blue-light);
+            color: var(--blue-dark);
+            font-weight: 700;
+            font-size: 0.78rem;
+            padding: 7px 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+        }
+        .price-table { width: 100%; border-collapse: collapse; background: white; }
+        .price-table th {
+            background: var(--blue-mid);
+            color: white;
+            padding: 8px 12px;
+            text-align: left;
+            font-size: 0.8rem;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+        .price-table th.num { text-align: right; }
+        .price-table td {
+            padding: 8px 12px;
+            font-size: 0.87rem;
+            border-bottom: 1px solid #eef2f7;
+            vertical-align: middle;
+        }
+        .price-table tr:last-child td { border-bottom: none; }
+        .price-table tr:nth-child(even) td { background: var(--blue-xlight); }
+        .price-table tr:hover td { background: #ddeeff; }
+        .price-table td.item  { font-weight: 600; }
+        .price-table td.store { color: #333; }
+        .price-table td.unit  { color: var(--gray); font-size: 0.78rem; }
+        .price-table td.date  { color: var(--gray); font-size: 0.78rem; white-space: nowrap; }
+        .price-table td.price { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--blue-dark); }
+
+        /* ── Chart panel ── */
+        .mode-row {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 14px;
+        }
+        .mode-btn {
+            padding: 6px 18px;
+            border-radius: 20px;
+            border: 2px solid var(--blue-mid);
+            background: white;
+            color: var(--blue-mid);
+            font-size: 0.84rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .mode-btn.active { background: var(--blue-mid); color: white; }
+        .mode-btn:hover  { background: var(--blue-mid); color: white; }
+
+        .chart-card {
+            background: white;
+            border-radius: 8px;
+            padding: 18px;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+            margin-bottom: 14px;
+        }
+        .chart-card label {
+            display: block;
+            font-size: 0.78rem;
+            font-weight: 700;
+            color: var(--gray);
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+            margin-bottom: 6px;
+        }
+        .chart-card select {
+            width: 100%;
+            padding: 9px 12px;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            font-size: 0.92rem;
+            background: white;
+            color: #222;
+            cursor: pointer;
+            appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%23666' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 12px center;
+            padding-right: 32px;
+        }
+        .chart-card select:focus { outline: none; border-color: var(--blue-mid); }
+
+        .chart-title {
+            font-size: 1rem;
+            font-weight: 700;
+            color: var(--blue-dark);
+            margin-bottom: 14px;
+        }
+        .chart-wrap { position: relative; }
+        canvas { max-height: 360px; }
+
+        .no-data-msg {
+            text-align: center;
+            padding: 40px 20px;
+            color: var(--gray);
+            font-size: 0.9rem;
+        }
+
+        /* ── Loading / Error ── */
+        .loading {
+            text-align: center;
+            padding: 48px 20px;
+            color: var(--gray);
+        }
+        .spinner {
+            width: 38px; height: 38px;
+            border: 3px solid var(--blue-light);
+            border-top-color: var(--blue-mid);
+            border-radius: 50%;
+            animation: spin 0.75s linear infinite;
+            margin: 0 auto 14px;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .error-box {
+            background: #fff3f3;
+            border: 1px solid #ffcdd2;
+            border-radius: 6px;
+            padding: 16px;
+            color: var(--red);
+            font-size: 0.87rem;
+            line-height: 1.5;
+        }
+        .error-box code {
+            display: block;
+            margin-top: 8px;
+            background: #ffeaea;
+            padding: 6px 10px;
+            border-radius: 4px;
+            font-size: 0.82rem;
+            word-break: break-all;
+        }
+
+        /* ── Footer ── */
+        footer {
+            text-align: center;
+            padding: 22px 16px;
+            color: var(--gray);
+            font-size: 0.78rem;
+            line-height: 1.6;
+        }
+        footer a { color: var(--blue-mid); text-decoration: none; }
+        footer a:hover { text-decoration: underline; }
+
+        /* ── Responsive ── */
+        @media (max-width: 560px) {
+            .price-table .date { display: none; }
+            header h1 { font-size: 1.2rem; }
+            .tab { padding: 10px 14px; font-size: 0.82rem; }
+        }
+    </style>
+</head>
+<body>
+
+<header>
+    <h1>🛒 SFV Price Tracker</h1>
+    <p>San Fernando Valley · Groceries &amp; Gas · <a href="https://www.instagram.com/sfv.me" style="color:rgba(255,255,255,0.8)">@sfv.me</a></p>
+</header>
+
+<nav>
+    <div class="tab active" data-tab="latest">Latest Prices</div>
+    <div class="tab"        data-tab="history">Price History</div>
+</nav>
+
+<main>
+
+    <!-- ── Latest Prices ── -->
+    <div id="panel-latest" class="panel active">
+        <div id="latest-content">
+            <div class="loading"><div class="spinner"></div>Loading prices…</div>
+        </div>
+    </div>
+
+    <!-- ── Price History ── -->
+    <div id="panel-history" class="panel">
+        <div class="mode-row">
+            <button class="mode-btn active" data-mode="item">By Item</button>
+            <button class="mode-btn"        data-mode="store">By Store</button>
+        </div>
+
+        <div class="chart-card" id="select-card">
+            <div id="select-item-wrap">
+                <label>Select Item</label>
+                <select id="sel-item"><option>Loading…</option></select>
+            </div>
+            <div id="select-store-wrap" style="display:none">
+                <label>Select Store / Station</label>
+                <select id="sel-store"><option>Loading…</option></select>
+            </div>
+        </div>
+
+        <div class="chart-card">
+            <div class="chart-title" id="chart-title">Select an item above to view price history</div>
+            <div class="chart-wrap">
+                <canvas id="price-chart"></canvas>
+            </div>
+            <div id="chart-no-data" class="no-data-msg" style="display:none">
+                Not enough history yet — keep logging prices and the chart will fill in.
+            </div>
+        </div>
+    </div>
+
+</main>
+
+<footer>
+    Prices surveyed by <a href="https://www.instagram.com/sfv.me">@sfv.me</a> in the San Fernando Valley.<br>
+    Last updated: <span id="last-updated">—</span>
+</footer>
+
+<script>
+// ══════════════════════════════════════════════════════════════
+//  CONFIG — paste your Google Sheets "Publish to web" CSV URL here
+// ══════════════════════════════════════════════════════════════
+const SHEET_CSV_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vRyia29JCe_AMrW9KmVUv17lz3acgKbVErSLjmRvb4kO-d6W_BcIV7cQjMv7bOOSy4pXio2Y0JHjqtp/pub?gid=155675764&single=true&output=csv';
+// ══════════════════════════════════════════════════════════════
+
+const CATEGORY_ORDER = ['Meat', 'Dairy & Staples', 'Tortillas', 'Produce', 'Gas'];
+
+const COLORS = [
+    '#2E75B6','#E05C2E','#2EAE66','#9B2DC6','#C6A82D',
+    '#2DC6B8','#C62D4A','#6B8E23','#E07B2E','#2D6BC6',
+    '#C62DC6','#2DC62D','#8B4513','#4169E1','#DC143C',
+    '#20B2AA','#FF6347','#9370DB','#3CB371','#FF8C00'
+];
+
+let allData   = [];
+let chartInst = null;
+let chartMode = 'item';
+
+// ── CSV parsing ───────────────────────────────────────────────
+function parseCSV(text) {
+    const lines = text.trim().split(/\r?\n/);
+    if (lines.length < 2) return [];
+
+    const headers = splitCSVLine(lines[0]).map(h => h.toLowerCase().trim());
+    const idx = {
+        date:  headers.findIndex(h => h === 'date'),
+        store: headers.findIndex(h => h === 'store'),
+        cat:   headers.findIndex(h => h === 'category'),
+        item:  headers.findIndex(h => h === 'item'),
+        price: headers.findIndex(h => h.includes('price')),
+        unit:  headers.findIndex(h => h === 'unit'),
+    };
+
+    const rows = [];
+    for (let i = 1; i < lines.length; i++) {
+        const c = splitCSVLine(lines[i]);
+        const store = (c[idx.store] || '').trim();
+        const item  = (c[idx.item]  || '').trim();
+        const date  = (c[idx.date]  || '').trim();
+        const raw   = (c[idx.price] || '').replace(/[$,\s]/g, '');
+        const price = parseFloat(raw);
+        if (!store || !item || !date || isNaN(price)) continue;
+        rows.push({
+            date,
+            store,
+            category: (c[idx.cat]  || '').trim() || 'Other',
+            item,
+            price,
+            unit: (c[idx.unit] || '').trim(),
+        });
+    }
+    return rows;
+}
+
+function splitCSVLine(line) {
+    const out = []; let cur = ''; let q = false;
+    for (const ch of line) {
+        if (ch === '"') { q = !q; }
+        else if (ch === ',' && !q) { out.push(cur.trim()); cur = ''; }
+        else { cur += ch; }
+    }
+    out.push(cur.trim());
+    return out.map(s => s.replace(/^"|"$/g, '').trim());
+}
+
+// ── Data helpers ──────────────────────────────────────────────
+function latestPerStoreItem(data) {
+    const map = {};
+    data.forEach(r => {
+        const k = `${r.item}|||${r.store}`;
+        if (!map[k] || r.date > map[k].date) map[k] = r;
+    });
+    return Object.values(map);
+}
+
+function fmtPrice(n) { return '$' + n.toFixed(2); }
+
+function fmtDate(d) {
+    if (!d) return '';
+    const [, m, day] = d.split('-');
+    const mon = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    return `${mon[+m]} ${+day}`;
+}
+
+function uniqueSorted(arr) { return [...new Set(arr)].sort(); }
+
+// ── Latest prices panel ───────────────────────────────────────
+function renderLatest(data) {
+    const latest  = latestPerStoreItem(data);
+    const stores  = uniqueSorted(latest.map(r => r.store)).length;
+    const maxDate = data.reduce((m, r) => r.date > m ? r.date : m, '');
+
+    // Group by category
+    const groups = {};
+    latest.forEach(r => {
+        (groups[r.category] = groups[r.category] || []).push(r);
+    });
+    Object.values(groups).forEach(arr =>
+        arr.sort((a, b) => a.item.localeCompare(b.item) || a.store.localeCompare(b.store))
+    );
+
+    const orderedCats = [
+        ...CATEGORY_ORDER.filter(c => groups[c]),
+        ...Object.keys(groups).filter(c => !CATEGORY_ORDER.includes(c)).sort()
+    ];
+
+    let html = `<div class="status-bar">
+        <span>${latest.length} prices tracked · ${stores} stores &amp; stations</span>
+        <span>Last entry: ${fmtDate(maxDate)}</span>
+    </div>`;
+
+    for (const cat of orderedCats) {
+        html += `
+        <div class="category-section">
+            <div class="category-header">${cat}</div>
+            <table class="price-table">
+                <thead><tr>
+                    <th>Item</th><th>Store / Station</th>
+                    <th>Unit</th><th class="num">As of</th><th class="num">Price</th>
+                </tr></thead><tbody>`;
+        for (const r of groups[cat]) {
+            html += `<tr>
+                <td class="item">${r.item}</td>
+                <td class="store">${r.store}</td>
+                <td class="unit">${r.unit}</td>
+                <td class="date">${fmtDate(r.date)}</td>
+                <td class="price">${fmtPrice(r.price)}</td>
+            </tr>`;
+        }
+        html += `</tbody></table></div>`;
+    }
+
+    document.getElementById('latest-content').innerHTML =
+        html || '<p style="padding:20px;color:#666">No data yet.</p>';
+    document.getElementById('last-updated').textContent = fmtDate(maxDate);
+}
+
+// ── Chart ─────────────────────────────────────────────────────
+function populateSelects(data) {
+    const items  = uniqueSorted(data.map(r => r.item));
+    const stores = uniqueSorted(data.map(r => r.store));
+
+    document.getElementById('sel-item').innerHTML =
+        items.map(i => `<option value="${i}">${i}</option>`).join('');
+    document.getElementById('sel-store').innerHTML =
+        stores.map(s => `<option value="${s}">${s}</option>`).join('');
+}
+
+function renderChart() {
+    const canvas = document.getElementById('price-chart');
+    const noData = document.getElementById('chart-no-data');
+    const ctx    = canvas.getContext('2d');
+
+    let datasets = [], allDates = [], title = '';
+
+    if (chartMode === 'item') {
+        const sel      = document.getElementById('sel-item').value;
+        const filtered = allData.filter(r => r.item === sel);
+        const stores   = uniqueSorted(filtered.map(r => r.store));
+        allDates = uniqueSorted(filtered.map(r => r.date));
+        title    = `${sel} — Price by Store / Station`;
+
+        datasets = stores.map((store, i) => {
+            const pts = filtered
+                .filter(r => r.store === store)
+                .sort((a, b) => a.date.localeCompare(b.date))
+                .map(r => ({ x: r.date, y: r.price }));
+            return mkDataset(store, pts, i);
+        });
+    } else {
+        const sel      = document.getElementById('sel-store').value;
+        const filtered = allData.filter(r => r.store === sel);
+        const items    = uniqueSorted(filtered.map(r => r.item));
+        allDates = uniqueSorted(filtered.map(r => r.date));
+        title    = `${sel} — Price History`;
+
+        datasets = items.map((item, i) => {
+            const pts = filtered
+                .filter(r => r.item === item)
+                .sort((a, b) => a.date.localeCompare(b.date))
+                .map(r => ({ x: r.date, y: r.price }));
+            return mkDataset(item, pts, i);
+        });
+    }
+
+    document.getElementById('chart-title').textContent = title;
+
+    const hasData = datasets.some(d => d.data.length > 1);
+    canvas.style.display  = hasData ? 'block' : 'none';
+    noData.style.display  = hasData ? 'none'  : 'block';
+    if (!hasData) return;
+
+    if (chartInst) chartInst.destroy();
+
+    chartInst = new Chart(ctx, {
+        type: 'line',
+        data: { datasets },
+        options: {
+            responsive: true,
+            interaction: { mode: 'index', intersect: false },
+            plugins: {
+                legend: {
+                    position: 'bottom',
+                    labels: { font: { size: 11 }, padding: 14, usePointStyle: true }
+                },
+                tooltip: {
+                    callbacks: {
+                        label: c => ` ${c.dataset.label}: ${fmtPrice(c.parsed.y)}`
+                    }
+                }
+            },
+            scales: {
+                x: {
+                    type: 'category',
+                    labels: allDates,
+                    ticks: {
+                        font: { size: 10 },
+                        callback: (_, i) => fmtDate(allDates[i])
+                    },
+                    grid: { color: '#eee' }
+                },
+                y: {
+                    ticks: {
+                        callback: v => fmtPrice(v),
+                        font: { size: 10 }
+                    },
+                    beginAtZero: false,
+                    grid: { color: '#eee' }
+                }
+            }
+        }
+    });
+}
+
+function mkDataset(label, data, i) {
+    const c = COLORS[i % COLORS.length];
+    return {
+        label, data,
+        borderColor:     c,
+        backgroundColor: c + '25',
+        borderWidth: 2.5,
+        pointRadius: 5,
+        pointHoverRadius: 7,
+        tension: 0.15,
+        fill: false,
+    };
+}
+
+// ── Tabs & mode buttons ───────────────────────────────────────
+document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+        document.querySelectorAll('.tab, .panel').forEach(el => el.classList.remove('active'));
+        tab.classList.add('active');
+        document.getElementById(`panel-${tab.dataset.tab}`).classList.add('active');
+        if (tab.dataset.tab === 'history' && allData.length) renderChart();
+    });
+});
+
+document.querySelectorAll('.mode-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        chartMode = btn.dataset.mode;
+        document.getElementById('select-item-wrap').style.display  = chartMode === 'item'  ? 'block' : 'none';
+        document.getElementById('select-store-wrap').style.display = chartMode === 'store' ? 'block' : 'none';
+        if (allData.length) renderChart();
+    });
+});
+
+document.getElementById('sel-item').addEventListener('change',  renderChart);
+document.getElementById('sel-store').addEventListener('change', renderChart);
+
+// ── Init ──────────────────────────────────────────────────────
+async function init() {
+    if (SHEET_CSV_URL.includes('YOUR_GOOGLE')) {
+        document.getElementById('latest-content').innerHTML = `
+            <div class="error-box">
+                <strong>Setup needed:</strong> open <code>index.html</code> in a text editor and replace
+                <code>YOUR_GOOGLE_SHEETS_CSV_URL_HERE</code> with your published Google Sheets CSV URL.
+                See the setup instructions for details.
+            </div>`;
+        return;
+    }
+
+    try {
+        const res = await fetch(SHEET_CSV_URL);
+        if (!res.ok) throw new Error(`Server returned ${res.status}`);
+        const text = await res.text();
+        allData = parseCSV(text);
+
+        if (!allData.length) {
+            document.getElementById('latest-content').innerHTML =
+                `<div class="error-box">Connected to Google Sheets but no price data found yet.
+                Add entries to the Price Log tab and they'll appear here.</div>`;
+            return;
+        }
+
+        renderLatest(allData);
+        populateSelects(allData);
+
+    } catch (err) {
+        document.getElementById('latest-content').innerHTML = `
+            <div class="error-box">
+                <strong>Could not load data.</strong><br>
+                ${err.message}<br><br>
+                Make sure your Google Sheet is published to the web as CSV
+                (File → Share → Publish to web → Price Log → CSV).
+                <code>${SHEET_CSV_URL}</code>
+            </div>`;
+    }
+}
+
+init();
+</script>
+</body>
+</html>

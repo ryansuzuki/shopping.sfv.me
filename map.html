@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gas Price Map | SFV.ME</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+    <style>
+        :root {
+            --blue-dark: #1F4E79;
+            --blue-mid:  #2E75B6;
+            --bg:        #0d1117;
+            --surface:   #161b22;
+            --border:    #30363d;
+            --muted:     #8b949e;
+            --text:      #e6edf3;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+        }
+
+        /* ── Page header ───────────────────────────────────── */
+        .page-header {
+            background: var(--blue-dark);
+            padding: 14px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .page-header h1 { font-size: 1.1rem; font-weight: 800; }
+        .page-header p  { font-size: 0.75rem; opacity: 0.65; margin-top: 2px; }
+        .page-header a  { color: #93c5fd; font-size: 0.8rem; text-decoration: none; }
+        .page-header a:hover { text-decoration: underline; }
+
+        /* ── Map section ───────────────────────────────────── */
+        .map-section {
+            display: flex;
+            flex-direction: column;
+            height: calc(50vh - 36px); /* two maps fill the screen */
+            min-height: 320px;
+            border-bottom: 3px solid var(--border);
+        }
+
+        /* Section header */
+        .section-header {
+            background: var(--blue-mid);
+            padding: 8px 16px;
+            display: flex;
+            align-items: baseline;
+            gap: 12px;
+            flex-shrink: 0;
+        }
+        .section-header h2 { font-size: 0.88rem; font-weight: 700; }
+        .section-header p  { font-size: 0.72rem; opacity: 0.75; }
+
+        /* Stats strip */
+        .stats {
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            flex-shrink: 0;
+            overflow-x: auto;
+        }
+        .stat {
+            padding: 7px 16px;
+            border-right: 1px solid var(--border);
+            min-width: 120px;
+        }
+        .stat-label { font-size: 0.63rem; text-transform: uppercase; letter-spacing: 0.4px; color: var(--muted); }
+        .stat-value { font-size: 1rem; font-weight: 700; margin-top: 1px; }
+        .stat-sub   { font-size: 0.65rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 160px; }
+
+        /* Map canvas */
+        .map-canvas { flex: 1; min-height: 0; }
+
+        /* ── Legend ────────────────────────────────────────── */
+        .legend {
+            background: rgba(22,27,34,0.92);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 8px 12px;
+            font-size: 0.72rem;
+            color: var(--text);
+            backdrop-filter: blur(4px);
+        }
+        .legend-title    { font-weight: 700; margin-bottom: 5px; }
+        .legend-gradient { width: 110px; height: 9px; border-radius: 3px; }
+        .legend-labels   { display: flex; justify-content: space-between; width: 110px; font-size: 0.62rem; color: var(--muted); margin-top: 2px; }
+        .legend-note     { color: var(--muted); font-size: 0.65rem; margin-top: 4px; }
+
+        /* Price labels on markers */
+        .price-label {
+            background: transparent !important;
+            border: none !important;
+            box-shadow: none !important;
+            font-size: 0.6rem;
+            font-weight: 800;
+            color: #fff;
+            text-shadow: 0 0 3px rgba(0,0,0,0.9);
+            pointer-events: none;
+        }
+
+        /* Popup */
+        .leaflet-popup-content-wrapper { border-radius: 8px; }
+        .popup-store    { font-weight: 700; font-size: 0.92rem; margin-bottom: 3px; }
+        .popup-price    { font-size: 1.2rem; font-weight: 800; }
+        .popup-unit     { font-size: 0.68rem; color: #666; }
+        .popup-diff     { font-size: 0.72rem; margin-top: 3px; }
+        .popup-note     { font-size: 0.68rem; color: #888; margin-top: 3px; }
+        .popup-date     { font-size: 0.65rem; color: #aaa; margin-top: 3px; }
+        .popup-samples  { font-size: 0.65rem; color: #aaa; }
+
+        /* Empty state */
+        .map-empty {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(22,27,34,0.92);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 20px 28px;
+            text-align: center;
+            z-index: 1000;
+            font-size: 0.85rem;
+            color: var(--muted);
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+
+<!-- ── Page header ─────────────────────────────────────────── -->
+<div class="page-header">
+    <div>
+        <h1>⛽ Gas Price Map — San Fernando Valley</h1>
+        <p>Two views of the same data — current snapshot and 30-day trend</p>
+    </div>
+    <a href="index.html">← Price Table</a>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════
+     MAP 1 — Current prices (latest reading per station)
+═══════════════════════════════════════════════════════════ -->
+<div class="map-section">
+    <div class="section-header">
+        <h2>📍 Current Prices</h2>
+        <p>Most recent reading per station — green = cheapest today, red = most expensive today</p>
+    </div>
+    <div class="stats" id="stats1">
+        <div class="stat"><div class="stat-label">Stations</div><div class="stat-value" id="s1-count">—</div></div>
+        <div class="stat"><div class="stat-label">Cheapest</div><div class="stat-value" style="color:#22c55e" id="s1-low">—</div><div class="stat-sub" id="s1-low-name"></div></div>
+        <div class="stat"><div class="stat-label">Most expensive</div><div class="stat-value" style="color:#ef4444" id="s1-high">—</div><div class="stat-sub" id="s1-high-name"></div></div>
+        <div class="stat"><div class="stat-label">SFV average</div><div class="stat-value" id="s1-avg">—</div></div>
+        <div class="stat"><div class="stat-label">As of</div><div class="stat-value" style="font-size:0.8rem" id="s1-date">—</div></div>
+    </div>
+    <div class="map-canvas" id="map1"></div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════
+     MAP 2 — 30-day rolling average vs SFV average
+═══════════════════════════════════════════════════════════ -->
+<div class="map-section" style="border-bottom:none">
+    <div class="section-header" style="background:#1a3a5c">
+        <h2>📊 30-Day Trend</h2>
+        <p>Each station's 30-day average vs SFV average — reveals which neighborhoods consistently run cheaper or more expensive</p>
+    </div>
+    <div class="stats" id="stats2">
+        <div class="stat"><div class="stat-label">Stations (30d)</div><div class="stat-value" id="s2-count">—</div></div>
+        <div class="stat"><div class="stat-label">Consistently cheapest</div><div class="stat-value" style="color:#22c55e" id="s2-low">—</div><div class="stat-sub" id="s2-low-name"></div></div>
+        <div class="stat"><div class="stat-label">Consistently priciest</div><div class="stat-value" style="color:#ef4444" id="s2-high">—</div><div class="stat-sub" id="s2-high-name"></div></div>
+        <div class="stat"><div class="stat-label">SFV 30d average</div><div class="stat-value" id="s2-avg">—</div></div>
+        <div class="stat"><div class="stat-label">Price spread</div><div class="stat-value" id="s2-spread">—</div></div>
+    </div>
+    <div class="map-canvas" id="map2"></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+// ══════════════════════════════════════════════════════════════
+const SHEET_CSV_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vQHkeLUYgyqTZ2GzctE_4OrrBcsWIVwpGzoVXb04Bq_cOEtsDtD-56znbijGHzrpDvrHojfdTqQy60D/pub?gid=1082050033&single=true&output=csv';
+const SFV_CENTER   = [34.185, -118.453];
+const DEFAULT_ZOOM = 12;
+const ROLLING_DAYS = 30;
+// ══════════════════════════════════════════════════════════════
+
+// ── Init both maps ────────────────────────────────────────────
+function makeMap(id) {
+    const m = L.map(id, { center: SFV_CENTER, zoom: DEFAULT_ZOOM });
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+        attribution: '© <a href="https://www.openstreetmap.org/copyright">OSM</a> © <a href="https://carto.com/">CARTO</a>',
+        subdomains: 'abcd', maxZoom: 19,
+    }).addTo(m);
+    return m;
+}
+const map1 = makeMap('map1');
+const map2 = makeMap('map2');
+
+// Keep maps synced when panning/zooming one
+function syncMaps(source, target) {
+    source.on('moveend', () => target.setView(source.getCenter(), source.getZoom(), { animate: false }));
+}
+syncMaps(map1, map2);
+syncMaps(map2, map1);
+
+// ── Legend factory ────────────────────────────────────────────
+function addLegend(map, minLabel, maxLabel, gradientCss, note) {
+    const ctrl = L.control({ position: 'bottomleft' });
+    ctrl.onAdd = () => {
+        const d = L.DomUtil.create('div', 'legend');
+        d.innerHTML = `
+            <div class="legend-title">Regular Gas</div>
+            <div class="legend-gradient" style="background:${gradientCss}"></div>
+            <div class="legend-labels"><span>${minLabel}</span><span>${maxLabel}</span></div>
+            <div class="legend-note">${note}</div>`;
+        return d;
+    };
+    ctrl.addTo(map);
+    return ctrl;
+}
+
+// ── CSV helpers ───────────────────────────────────────────────
+function parseCSV(text) {
+    const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+    const hi    = lines.findIndex(l => /^date/i.test(l));
+    const headers = lines[hi < 0 ? 1 : hi]
+        .split(',')
+        .map(h => h.trim().toLowerCase().replace(/[()$%\s]+/g, '_').replace(/_+$/, ''));
+    const rows = [];
+    for (let i = (hi < 0 ? 2 : hi + 1); i < lines.length; i++) {
+        const cells = splitLine(lines[i]);
+        if (!cells[0]) continue;
+        const obj = {};
+        headers.forEach((h, idx) => obj[h] = (cells[idx] || '').trim());
+        rows.push(obj);
+    }
+    return rows;
+}
+
+function splitLine(line) {
+    const out = []; let cur = '', q = false;
+    for (const c of line) {
+        if (c === '"') q = !q;
+        else if (c === ',' && !q) { out.push(cur); cur = ''; }
+        else cur += c;
+    }
+    out.push(cur);
+    return out;
+}
+
+function toNum(s) { return parseFloat((s||'').replace(/[^0-9.]/g,'')) || null; }
+
+function hslColor(t) {
+    // t: 0 = cheapest (green), 1 = most expensive (red)
+    const h = Math.round(120 * (1 - Math.max(0, Math.min(1, t))));
+    return `hsl(${h},80%,44%)`;
+}
+
+function addMarker(mapObj, lat, lon, price, color, popupHTML, labelText) {
+    const c = L.circleMarker([lat, lon], {
+        radius: 17, fillColor: color,
+        color: '#0d1117', weight: 2,
+        opacity: 1, fillOpacity: 0.88,
+    });
+    c.bindPopup(popupHTML);
+    c.bindTooltip(labelText, { permanent: true, direction: 'center', className: 'price-label' });
+    c.addTo(mapObj);
+}
+
+function showEmpty(mapId, msg) {
+    const el = document.createElement('div');
+    el.className = 'map-empty';
+    el.innerHTML = msg;
+    document.getElementById(mapId).appendChild(el);
+}
+
+// ── Main ──────────────────────────────────────────────────────
+async function init() {
+    let rows;
+    try {
+        const res = await fetch(SHEET_CSV_URL);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        rows = parseCSV(await res.text());
+    } catch (e) {
+        showEmpty('map1', `<strong>Could not load data</strong><br>${e.message}`);
+        showEmpty('map2', `<strong>Could not load data</strong><br>${e.message}`);
+        return;
+    }
+
+    // Only gas rows with coordinates
+    const gas = rows.filter(r =>
+        /gas/i.test(r.category||'') &&
+        toNum(r.latitude) && toNum(r.longitude)
+    );
+
+    // ── MAP 1: Latest price per station ───────────────────────
+    const latestByStore = {};
+    gas.forEach(r => {
+        const k = r.store;
+        if (!latestByStore[k] || r.date > latestByStore[k].date)
+            latestByStore[k] = r;
+    });
+    const current = Object.values(latestByStore)
+        .map(r => ({ ...r, _p: toNum(r.price) }))
+        .filter(r => r._p);
+
+    if (current.length === 0) {
+        showEmpty('map1', '<strong>No mapped stations yet</strong><br>Photos processed by the app will appear here once the sheet has Latitude & Longitude columns.');
+    } else {
+        const prices1 = current.map(r => r._p);
+        const min1    = Math.min(...prices1);
+        const max1    = Math.max(...prices1);
+        const avg1    = prices1.reduce((a,b) => a+b, 0) / prices1.length;
+        const sorted1 = [...current].sort((a,b) => a._p - b._p);
+        const bounds1 = [];
+
+        current.forEach(r => {
+            const t     = (max1 === min1) ? 0.5 : (r._p - min1) / (max1 - min1);
+            const color = hslColor(t);
+            const diff  = r._p - avg1;
+            const diffStr = diff >= 0
+                ? `<span style="color:#ef4444">+$${diff.toFixed(2)} vs avg</span>`
+                : `<span style="color:#22c55e">−$${Math.abs(diff).toFixed(2)} vs avg</span>`;
+            addMarker(map1, toNum(r.latitude), toNum(r.longitude), r._p, color, `
+                <div style="font-family:-apple-system,sans-serif;min-width:165px">
+                    <div class="popup-store">${r.store}</div>
+                    <div class="popup-price" style="color:${color}">$${r._p.toFixed(2)}<span class="popup-unit">/gal</span></div>
+                    <div class="popup-diff">${diffStr}</div>
+                    ${r.notes ? `<div class="popup-note">📍 ${r.notes}</div>` : ''}
+                    <div class="popup-date">Updated ${r.date}</div>
+                </div>`, `$${r._p.toFixed(2)}`);
+            bounds1.push([toNum(r.latitude), toNum(r.longitude)]);
+        });
+
+        if (bounds1.length) map1.fitBounds(bounds1, { padding: [40,40] });
+
+        document.getElementById('s1-count').textContent     = current.length;
+        document.getElementById('s1-low').textContent       = `$${sorted1[0]._p.toFixed(2)}`;
+        document.getElementById('s1-low-name').textContent  = sorted1[0].store;
+        document.getElementById('s1-high').textContent      = `$${sorted1.at(-1)._p.toFixed(2)}`;
+        document.getElementById('s1-high-name').textContent = sorted1.at(-1).store;
+        document.getElementById('s1-avg').textContent       = `$${avg1.toFixed(2)}`;
+        document.getElementById('s1-date').textContent      = [...prices1].map((_,i) => current[i].date).sort().pop() || '—';
+
+        addLegend(map1,
+            `$${min1.toFixed(2)} cheapest`,
+            `$${max1.toFixed(2)} priciest`,
+            'linear-gradient(to right,#22c55e,#eab308,#ef4444)',
+            'vs other stations today');
+    }
+
+    // ── MAP 2: Rolling average per station (up to ROLLING_DAYS, all data if less) ──
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - ROLLING_DAYS);
+    const cutoffStr = cutoff.toISOString().slice(0, 10);
+
+    // Use last 30 days if available; otherwise use everything we have
+    let recent = gas.filter(r => r.date >= cutoffStr);
+    if (recent.length === 0) recent = gas;
+
+    // Accumulate sum + count per store (keep latest lat/lon/notes)
+    const avgMap = {};
+    recent.forEach(r => {
+        const p = toNum(r.price);
+        if (!p) return;
+        if (!avgMap[r.store]) avgMap[r.store] = { store: r.store, sum: 0, count: 0, lat: toNum(r.latitude), lon: toNum(r.longitude), notes: r.notes, lastDate: r.date };
+        avgMap[r.store].sum   += p;
+        avgMap[r.store].count += 1;
+        if (r.date > avgMap[r.store].lastDate) {
+            avgMap[r.store].lastDate = r.date;
+            avgMap[r.store].lat   = toNum(r.latitude);
+            avgMap[r.store].lon   = toNum(r.longitude);
+            avgMap[r.store].notes = r.notes;
+        }
+    });
+
+    const rolling = Object.values(avgMap)
+        .map(s => ({ ...s, _avg: s.sum / s.count }));
+
+    // Label reflects actual date range covered
+    const dates      = recent.map(r => r.date).filter(Boolean).sort();
+    const firstDate  = dates[0]  || '—';
+    const lastDate   = dates.at(-1) || '—';
+    const daysCovered = firstDate !== '—'
+        ? Math.round((new Date(lastDate) - new Date(firstDate)) / 86400000) + 1
+        : 0;
+    const windowLabel = daysCovered >= ROLLING_DAYS
+        ? `30-day average`
+        : daysCovered <= 1
+            ? `1-day average (keep logging — trend improves over time)`
+            : `${daysCovered}-day average (will extend to 30 days as data grows)`;
+
+    // Update section header dynamically
+    document.querySelector('#map2').closest('.map-section').querySelector('.section-header p').textContent =
+        `Each station's ${windowLabel} vs SFV average — reveals which neighborhoods consistently run cheaper or more expensive`;
+
+    if (rolling.length === 0) {
+        showEmpty('map2', `<strong>No mapped stations yet</strong><br>Gas price photos processed by the app will appear here.`);
+    } else {
+        // SFV-wide 30-day average (weighted by readings)
+        const totalSum   = rolling.reduce((a, s) => a + s.sum,   0);
+        const totalCount = rolling.reduce((a, s) => a + s.count, 0);
+        const sfvAvg     = totalSum / totalCount;
+
+        const diffs  = rolling.map(s => s._avg - sfvAvg);
+        const minD   = Math.min(...diffs);
+        const maxD   = Math.max(...diffs);
+        const sorted2 = [...rolling].sort((a,b) => a._avg - b._avg);
+        const bounds2 = [];
+
+        rolling.forEach(s => {
+            const diff  = s._avg - sfvAvg;
+            const t     = (maxD === minD) ? 0.5 : (diff - minD) / (maxD - minD);
+            const color = hslColor(t);
+            const diffStr = diff >= 0
+                ? `<span style="color:#ef4444">+$${diff.toFixed(2)} above SFV avg</span>`
+                : `<span style="color:#22c55e">−$${Math.abs(diff).toFixed(2)} below SFV avg</span>`;
+            addMarker(map2, s.lat, s.lon, s._avg, color, `
+                <div style="font-family:-apple-system,sans-serif;min-width:175px">
+                    <div class="popup-store">${s.store}</div>
+                    <div class="popup-price" style="color:${color}">$${s._avg.toFixed(2)}<span class="popup-unit">/gal 30d avg</span></div>
+                    <div class="popup-diff">${diffStr}</div>
+                    <div class="popup-samples">Based on ${s.count} reading${s.count > 1 ? 's' : ''} · last ${s.lastDate}</div>
+                    ${s.notes ? `<div class="popup-note">📍 ${s.notes}</div>` : ''}
+                </div>`, `$${s._avg.toFixed(2)}`);
+            bounds2.push([s.lat, s.lon]);
+        });
+
+        if (bounds2.length) map2.fitBounds(bounds2, { padding: [40,40] });
+
+        const minAvg = sorted2[0]._avg;
+        const maxAvg = sorted2.at(-1)._avg;
+
+        document.getElementById('s2-count').textContent     = rolling.length;
+        document.getElementById('s2-low').textContent       = `$${minAvg.toFixed(2)}`;
+        document.getElementById('s2-low-name').textContent  = sorted2[0].store;
+        document.getElementById('s2-high').textContent      = `$${maxAvg.toFixed(2)}`;
+        document.getElementById('s2-high-name').textContent = sorted2.at(-1).store;
+        document.getElementById('s2-avg').textContent       = `$${sfvAvg.toFixed(2)}`;
+        document.getElementById('s2-spread').textContent    = `$${(maxAvg - minAvg).toFixed(2)}`;
+
+        addLegend(map2,
+            `−$${Math.abs(minD).toFixed(2)} below avg`,
+            `+$${maxD.toFixed(2)} above avg`,
+            'linear-gradient(to right,#22c55e,#eab308,#ef4444)',
+            `vs SFV avg $${sfvAvg.toFixed(2)} · ${windowLabel}`);
+    }
+}
+
+init();
+</script>
+</body>
+</html>

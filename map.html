@@ -252,7 +252,7 @@ function splitLine(line) {
     return out;
 }
 
-function toNum(s) { return parseFloat((s||'').replace(/[^0-9.]/g,'')) || null; }
+function toNum(s) { if (!s) return null; const n = parseFloat(s); return isNaN(n) ? null : n; }
 
 function hslColor(t) {
     // t: 0 = cheapest (green), 1 = most expensive (red)

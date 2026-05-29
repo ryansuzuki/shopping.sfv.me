@@ -8,7 +8,9 @@ and deletes the photo on success.
 Pipeline per photo:
   1. Convert HEIC → JPEG (macOS sips)
   2. Extract date + GPS from EXIF
-  3. Reverse-geocode GPS → street address (Nominatim, free)
+  3. Look up GPS in Stations registry (Google Sheets "Stations" tab, ~100m radius)
+     • Match found → use standardized name from registry
+     • No match → reverse-geocode + Claude brand → auto-add to registry
   4. Claude Haiku vision → gas brand + regular price
   5. Append row to Google Sheets Price Log
   6. Delete photo
@@ -20,6 +22,7 @@ Errors: ~/.icloud_photos_sync/errors/  (photos that failed processing)
 
 import base64
 import json
+import math
 import re
 import logging
 import os
@@ -278,15 +281,26 @@ def build_sheets_service(credentials_path: str):
 
 def append_row(service, spreadsheet_id: str, sheet_tab: str, row: list,
                lat: Optional[float] = None, lon: Optional[float] = None) -> None:
-    """Append a row to the Price Log (A:G), then write lat/lon to I:J if provided."""
+    """Append a row to the Price Log (A:G), then write lat/lon to I:J if provided.
+    Retries up to 3 times on network errors."""
     range_name = f"'{sheet_tab}'!A:G"
-    result = service.spreadsheets().values().append(
-        spreadsheetId=spreadsheet_id,
-        range=range_name,
-        valueInputOption="USER_ENTERED",
-        insertDataOption="INSERT_ROWS",
-        body={"values": [row]},
-    ).execute()
+    result = None
+    for attempt in range(1, 4):
+        try:
+            result = service.spreadsheets().values().append(
+                spreadsheetId=spreadsheet_id,
+                range=range_name,
+                valueInputOption="USER_ENTERED",
+                insertDataOption="INSERT_ROWS",
+                body={"values": [row]},
+            ).execute()
+            break
+        except Exception as e:
+            if attempt < 3:
+                log.warning(f"Sheets write attempt {attempt}/3 failed: {e} — retrying in 5s")
+                time.sleep(5)
+            else:
+                raise
     log.info(f"Appended row: {row}")
 
     if lat is not None and lon is not None:
@@ -305,6 +319,162 @@ def append_row(service, spreadsheet_id: str, sheet_tab: str, row: list,
             log.info(f"Wrote lat/lon to {latlon_range}: {lat:.6f}, {lon:.6f}")
 
 
+# ── Station Registry ─────────────────────────────────────────────────────────
+#
+# "Stations" tab columns (row 1 = header):
+#   A: Name        — display name e.g. "Chevron - Balboa & Nordhoff"
+#   B: Brand       — e.g. "Chevron"
+#   C: Address     — full address string from Nominatim
+#   D: Latitude
+#   E: Longitude
+#   F: Notes       — free-form, editable by user
+#
+# The registry is reloaded from Sheets on each scan so manual edits take effect
+# without restarting the daemon.
+
+STATION_TAB = "Stations"
+STATION_MATCH_METERS = 100   # GPS within this radius → same station
+
+
+def haversine_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Return distance in metres between two GPS coordinates."""
+    R = 6_371_000  # Earth radius in metres
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlam = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2) ** 2
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def load_station_registry(service, spreadsheet_id: str) -> list[dict]:
+    """Read the Stations tab and return a list of station dicts.
+    Creates the tab with a header row if it doesn't exist yet."""
+    try:
+        result = service.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id,
+            range=f"'{STATION_TAB}'!A:F",
+        ).execute()
+        rows = result.get("values", [])
+    except Exception as e:
+        # Tab probably doesn't exist — create it
+        if "Unable to parse range" in str(e) or "does not exist" in str(e).lower() or "400" in str(e):
+            log.info(f"Creating '{STATION_TAB}' tab in Google Sheet")
+            _create_stations_tab(service, spreadsheet_id)
+            return []
+        log.warning(f"Could not load station registry: {e}")
+        return []
+
+    if not rows or len(rows) < 2:
+        return []  # header only or empty
+
+    stations = []
+    for row in rows[1:]:  # skip header
+        if len(row) < 5:
+            continue
+        try:
+            stations.append({
+                "name":    row[0].strip(),
+                "brand":   row[1].strip() if len(row) > 1 else "",
+                "address": row[2].strip() if len(row) > 2 else "",
+                "lat":     float(row[3]),
+                "lon":     float(row[4]),
+                "notes":   row[5].strip() if len(row) > 5 else "",
+            })
+        except (ValueError, IndexError):
+            pass
+    log.info(f"Loaded {len(stations)} station(s) from registry")
+    return stations
+
+
+def _create_stations_tab(service, spreadsheet_id: str) -> None:
+    """Add the Stations sheet tab and write the header row."""
+    # Add the sheet
+    service.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id,
+        body={"requests": [{"addSheet": {"properties": {"title": STATION_TAB}}}]},
+    ).execute()
+    # Write header
+    service.spreadsheets().values().update(
+        spreadsheetId=spreadsheet_id,
+        range=f"'{STATION_TAB}'!A1:F1",
+        valueInputOption="USER_ENTERED",
+        body={"values": [["Name", "Brand", "Address", "Latitude", "Longitude", "Notes"]]},
+    ).execute()
+    log.info(f"Created '{STATION_TAB}' tab with header row")
+
+
+def find_station_in_registry(stations: list[dict],
+                              lat: float, lon: float) -> Optional[dict]:
+    """Return the closest station within STATION_MATCH_METERS, or None."""
+    best = None
+    best_dist = float("inf")
+    for s in stations:
+        d = haversine_meters(lat, lon, s["lat"], s["lon"])
+        if d < best_dist:
+            best_dist = d
+            best = s
+    if best and best_dist <= STATION_MATCH_METERS:
+        log.info(f"Registry match: '{best['name']}' ({best_dist:.0f}m away)")
+        return best
+    return None
+
+
+def add_station_to_registry(service, spreadsheet_id: str, name: str, brand: str,
+                             address: str, lat: float, lon: float) -> None:
+    """Append a new row to the Stations tab."""
+    row = [name, brand, address, round(lat, 6), round(lon, 6), "auto-added"]
+    for attempt in range(1, 4):
+        try:
+            service.spreadsheets().values().append(
+                spreadsheetId=spreadsheet_id,
+                range=f"'{STATION_TAB}'!A:F",
+                valueInputOption="USER_ENTERED",
+                insertDataOption="INSERT_ROWS",
+                body={"values": [row]},
+            ).execute()
+            log.info(f"Registered new station: '{name}'  ({lat:.5f}, {lon:.5f})")
+            return
+        except Exception as e:
+            if attempt < 3:
+                log.warning(f"Registry write attempt {attempt}/3 failed: {e} — retrying in 5s")
+                time.sleep(5)
+            else:
+                log.error(f"Could not add station to registry: {e}")
+
+
+def build_station_name(brand: str, address: str) -> str:
+    """
+    Build an intersection-style station name from brand + Nominatim address.
+
+    Nominatim sometimes returns a road name only ("Balboa Ave, Los Angeles").
+    We use what we have; the user can later edit the registry to add the cross street,
+    e.g. changing "Chevron - Balboa Ave" → "Chevron - Balboa & Nordhoff".
+    """
+    street = address.split(",")[0].strip() if address else ""
+    return f"{brand} - {street}" if street else brand
+
+
+def get_or_register_station(
+    service, spreadsheet_id: str, stations: list[dict],
+    lat: float, lon: float, brand: str, address: str,
+) -> tuple[str, list[dict]]:
+    """
+    Look up the station in the registry by GPS.
+    • Match found → return its standardized name unchanged.
+    • No match    → build a name, add to registry, append to in-memory list.
+    Returns (station_name, updated_stations).
+    """
+    match = find_station_in_registry(stations, lat, lon)
+    if match:
+        return match["name"], stations
+
+    name = build_station_name(brand, address)
+    add_station_to_registry(service, spreadsheet_id, name, brand, address, lat, lon)
+    stations = stations + [{"name": name, "brand": brand, "address": address,
+                             "lat": lat, "lon": lon, "notes": "auto-added"}]
+    return name, stations
+
+
 # ── Per-photo pipeline ────────────────────────────────────────────────────────
 
 def process_photo(
@@ -312,14 +482,16 @@ def process_photo(
     config: dict,
     anthropic_client: anthropic.Anthropic,
     sheets_service,
-) -> bool:
+    stations: list[dict],
+) -> tuple[bool, list[dict]]:
     """
-    Full pipeline for one photo. Returns True on success (photo deleted).
+    Full pipeline for one photo. Returns (success, updated_stations).
     On failure, moves the photo to the errors folder for manual review.
     """
     log.info(f"── Processing {photo_path.name}")
     jpeg_path = photo_path   # updated below if HEIC conversion happens
     crop_path = photo_path   # updated below after cropping
+    lat = lon = None
 
     try:
         # 1. Convert HEIC → JPEG if needed
@@ -350,19 +522,30 @@ def process_photo(
             log.warning(f"Attempt {attempt}/3: price not found, retrying...")
             time.sleep(2)
 
-        if not gas_info:
-            raise ValueError("Claude could not extract gas info from image")
-
-        brand = (gas_info.get("brand") or "Unknown Station").strip()
-        regular_price = gas_info.get("regular_price")
-        if regular_price is None:
+        if not gas_info or gas_info.get("regular_price") is None:
             raise ValueError("Regular price not found after 3 attempts")
 
-        # 5. Build the Price Log row
-        #    Columns: Date | Store | Category | Item | Price | Unit | Notes
-        #    Store format: "Chevron - Van Nuys Blvd" (brand + first part of address)
-        street = address.split(",")[0].strip() if address else ""
-        store_name = f"{brand} - {street}" if street else brand
+        # Brand is optional — log a warning and continue with Unknown if missing
+        brand = (gas_info.get("brand") or "").strip()
+        if not brand:
+            log.warning("Brand not identified — using 'Unknown Station'")
+            brand = "Unknown Station"
+        regular_price = gas_info.get("regular_price")
+
+        # 6. Station registry lookup / auto-register
+        if gps:
+            store_name, stations = get_or_register_station(
+                sheets_service,
+                config["google_sheets_id"],
+                stations,
+                lat, lon,
+                brand,
+                address or "",
+            )
+        else:
+            # No GPS — fall back to on-the-fly name, no registry write
+            store_name = build_station_name(brand, address or "")
+
         notes = address or ""
 
         row = [
@@ -375,25 +558,25 @@ def process_photo(
             notes,               # G  Notes (full address)
         ]
 
-        # 6. Append to Google Sheets (include lat/lon if available)
+        # 7. Append to Google Sheets (include lat/lon if available)
         append_row(
             sheets_service,
             config["google_sheets_id"],
             config["sheet_tab"],
             row,
-            lat=lat if gps else None,
-            lon=lon if gps else None,
+            lat=lat,
+            lon=lon,
         )
 
-        # 7. Delete photos on success
+        # 8. Delete photos on success
         photo_path.unlink()
         if jpeg_path != photo_path and jpeg_path.exists():
             jpeg_path.unlink()
         if crop_path.exists():
             crop_path.unlink()
 
-        log.info(f"✅  {brand} ${regular_price}/gal  |  {photo_date}  |  {address or 'no address'}")
-        return True
+        log.info(f"✅  {store_name}  ${regular_price}/gal  |  {photo_date}")
+        return True, stations
 
     except Exception as e:
         log.error(f"❌  Failed: {photo_path.name} — {e}")
@@ -416,7 +599,7 @@ def process_photo(
                 crop_path.rename(ERROR_DIR / crop_path.name)
             except Exception:
                 pass
-        return False
+        return False, stations
 
 
 # ── Folder scanner ────────────────────────────────────────────────────────────
@@ -435,8 +618,12 @@ def scan_folder(config: dict, anthropic_client, sheets_service) -> None:
         return
 
     log.info(f"Found {len(photos)} photo(s) to process")
+
+    # Load station registry once per scan so manual edits take effect promptly
+    stations = load_station_registry(sheets_service, config["google_sheets_id"])
+
     for photo in photos:
-        process_photo(photo, config, anthropic_client, sheets_service)
+        _, stations = process_photo(photo, config, anthropic_client, sheets_service, stations)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -453,9 +640,10 @@ def main():
         )
         sys.exit(1)
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    # API key: config file takes priority, env var as fallback
+    api_key = config.get("anthropic_api_key") or os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
-        log.error("ANTHROPIC_API_KEY environment variable is not set. See SETUP.md.")
+        log.error("Anthropic API key not set. Add 'anthropic_api_key' to ~/.icloud_photos_sync/gas_processor_config.json or set ANTHROPIC_API_KEY env var.")
         sys.exit(1)
 
     creds_file = Path(config["google_credentials_file"]).expanduser()
